@@ -128,23 +128,24 @@ input[type=text], input[type=date], input[inputmode] {
       <label class="f">Home currency<input type="text" id="cur" maxlength="4" autocomplete="off"></label>
       <label class="f">₫ per 1 unit<input type="text" inputmode="numeric" id="rate" autocomplete="off"></label>
     </div>
-    <div class="hint">Names and rate are shared. Amounts are always stored in đồng.</div>
+    <div class="hint">Names and rate are shared. The rate converts between đồng and your home currency; anything entered in your home currency stays exact.</div>
     <button class="primary" id="saveSettings" type="button">Save settings</button>
   </section>
 
   <form class="card" id="form" autocomplete="off">
     <div class="formtitle"><h2 id="formTitle">Add expense</h2><button class="linkbtn" id="cancelEdit" type="button" hidden>Cancel</button></div>
 
-    <label class="f">Amount
-      <div class="amountrow"><input id="amount" inputmode="numeric" placeholder="350.000" aria-describedby="amtHint"><span>₫</span></div>
-    </label>
-    <div class="hint num" id="amtHint">Tip: type 350k or 1.2m</div>
-    <div class="chips" id="quick">
-      <button type="button" class="chip" data-add="50000">+50k</button>
-      <button type="button" class="chip" data-add="100000">+100k</button>
-      <button type="button" class="chip" data-add="500000">+500k</button>
-      <button type="button" class="chip" data-add="1000000">+1m</button>
+    <div class="f"><span>Paid in</span>
+      <div class="seg" id="curSeg">
+        <button type="button" data-v="vnd" aria-pressed="true">Đồng ₫</button>
+        <button type="button" data-v="home" aria-pressed="false" class="homeLbl">AUD</button>
+      </div>
     </div>
+    <label class="f">Amount
+      <div class="amountrow"><input id="amount" inputmode="numeric" placeholder="350.000" aria-describedby="amtHint"><span id="amtSuffix">₫</span></div>
+    </label>
+    <div class="hint num" id="amtHint"></div>
+    <div class="chips" id="quick"></div>
 
     <label class="f">What for<input type="text" id="desc" placeholder="Phở at Bún Chả Hương Liên" maxlength="80"></label>
 
@@ -176,8 +177,12 @@ input[type=text], input[type=date], input[inputmode] {
   <section class="card" id="payCard" hidden>
     <div class="formtitle"><h2>Record payment</h2><button class="linkbtn" id="payCancel" type="button">Cancel</button></div>
     <div class="hint" id="payText"></div>
+    <div class="seg" id="payCurSeg">
+      <button type="button" data-v="home" aria-pressed="true" class="homeLbl">AUD</button>
+      <button type="button" data-v="vnd" aria-pressed="false">Đồng ₫</button>
+    </div>
     <label class="f">Amount sent
-      <div class="amountrow"><input id="payAmount" inputmode="numeric"><span>₫</span></div>
+      <div class="amountrow"><input id="payAmount" inputmode="decimal"><span id="paySuffix">$</span></div>
     </label>
     <button class="primary" id="paySave" type="button">Save payment</button>
   </section>
@@ -207,13 +212,26 @@ let settings = { nameA: "Stirling", nameB: "Ryan", currency: "AUD", rate: 17000 
 let expenses = [];
 let db = null;
 let editingId = null;
-let form = { paidBy: "a", split: "half", cat: "food" };
+let form = { paidBy: "a", split: "half", cat: "food", cur: "vnd" };
+let payCur = "home";
 
 try { const me = localStorage.getItem("me"); if (me === "a" || me === "b") form.paidBy = me; } catch (e) {}
+try { const c = localStorage.getItem("cur"); if (c === "vnd" || c === "home") form.cur = c; } catch (e) {}
 
 function nm(k) { return k === "a" ? settings.nameA : settings.nameB; }
 function other(k) { return k === "a" ? "b" : "a"; }
 function conv(n) { const r = Number(settings.rate) || 0; if (!r) return ""; const v = n / r; return "≈ " + v.toLocaleString(undefined, { maximumFractionDigits: v < 100 ? 2 : 0 }) + " " + (settings.currency || ""); }
+
+const code = () => settings.currency || "AUD";
+const rate = () => Number(settings.rate) || 0;
+function homeFmt(n) { return n.toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " " + code(); }
+function parseHome(s) { const n = parseFloat(String(s || "").replace(/[^\d.,-]/g, "").replace(/,/g, "")); return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0; }
+function parseIn(cur, s) { return cur === "home" ? parseHome(s) : parseAmt(s); }
+function inputVal(cur, n) { return cur === "home" ? String(n) : n.toLocaleString("vi-VN"); }
+// Entries in home currency keep their original amount; their đồng value follows the current rate
+function valueVnd(e) { return e.cur === "home" ? (Number(e.orig) || 0) * rate() : Number(e.amount) || 0; }
+function entryMain(e) { return e.cur === "home" ? homeFmt(Number(e.orig) || 0) : vnd(e.amount); }
+function entrySub(e) { return e.cur === "home" ? (rate() ? "≈ " + vnd(valueVnd(e)) : "") : conv(Number(e.amount) || 0); }
 
 // "350k" -> 350000, "1.2m" -> 1200000, "350.000" -> 350000
 function parseAmt(s) {
@@ -232,7 +250,7 @@ function parseAmt(s) {
 function balance() {
   let owed = 0, paidA = 0, paidB = 0, total = 0;
   for (const e of expenses) {
-    const amt = Number(e.amount) || 0;
+    const amt = valueVnd(e);
     const sign = e.paidBy === "a" ? 1 : -1;
     if (e.kind === "payment") { owed += sign * amt; continue; }
     if (e.paidBy === "a") paidA += amt; else paidB += amt;
@@ -259,8 +277,8 @@ function renderBalance() {
   } else {
     const debtor = owed > 0 ? "b" : "a";
     $("balWho").textContent = nm(debtor) + " owes " + nm(other(debtor));
-    $("balAmt").textContent = vnd(abs);
-    $("balConv").textContent = conv(abs);
+    $("balAmt").textContent = rate() ? homeFmt(abs / rate()) : vnd(abs);
+    $("balConv").textContent = rate() ? "≈ " + vnd(abs) : "";
     $("settleBtn").hidden = false;
     $("settleBtn").textContent = "Record " + nm(debtor) + "'s payment";
   }
@@ -272,12 +290,29 @@ function renderForm() {
   $("splitSelf").textContent = "Just " + nm(form.paidBy) + "'s";
   for (const b of $("split").children) b.setAttribute("aria-pressed", b.dataset.v === form.split);
   for (const b of $("cats").children) b.setAttribute("aria-pressed", b.dataset.v === form.cat);
-  const n = parseAmt($("amount").value);
+  for (const el of document.querySelectorAll(".homeLbl")) el.textContent = code();
+  for (const b of $("curSeg").children) b.setAttribute("aria-pressed", b.dataset.v === form.cur);
+  const home = form.cur === "home";
+  $("amtSuffix").textContent = home ? "$" : "₫";
+  $("amount").inputMode = home ? "decimal" : "numeric";
+  $("amount").placeholder = home ? "120.00" : "350.000";
+  const quick = home ? [10, 20, 50, 100] : [50000, 100000, 500000, 1000000];
+  if ($("quick").dataset.cur !== form.cur) {
+    $("quick").dataset.cur = form.cur; $("quick").textContent = "";
+    for (const q of quick) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "chip";
+      b.textContent = "+" + (home ? q : q >= 1e6 ? q / 1e6 + "m" : q / 1e3 + "k");
+      b.addEventListener("click", () => { $("amount").value = inputVal(form.cur, Math.round((parseIn(form.cur, $("amount").value) + q) * 100) / 100); renderForm(); });
+      $("quick").appendChild(b);
+    }
+  }
+  const n = parseIn(form.cur, $("amount").value);
   if (n) {
-    let line = vnd(n) + "  " + conv(n);
-    if (form.split === "half") line += " · each pays " + vnd(n / 2);
+    const fmt = home ? homeFmt : vnd;
+    let line = home ? fmt(n) + (rate() ? "  ≈ " + vnd(n * rate()) : "") : vnd(n) + "  " + conv(n);
+    if (form.split === "half") line += " · each pays " + fmt(n / 2);
     $("amtHint").textContent = line;
-  } else $("amtHint").textContent = "Tip: type 350k or 1.2m";
+  } else $("amtHint").textContent = home ? "For online bookings charged in " + code() : "Tip: type 350k or 1.2m";
 }
 
 function splitLabel(e) {
@@ -312,7 +347,7 @@ function renderList() {
     const dt = new Date(day + "T12:00:00");
     dl.textContent = isNaN(dt) ? day : dt.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
     const dsum = document.createElement("span");
-    dsum.textContent = vnd(items.filter(e => e.kind !== "payment").reduce((s, e) => s + (Number(e.amount) || 0), 0));
+    dsum.textContent = vnd(items.filter(e => e.kind !== "payment").reduce((s, e) => s + valueVnd(e), 0));
     head.append(dl, dsum);
     const box = document.createElement("div"); box.className = "items";
     for (const e of items) {
@@ -325,8 +360,8 @@ function renderList() {
       const ts = document.createElement("small"); ts.textContent = splitLabel(e);
       t.append(tb, ts);
       const a = document.createElement("span"); a.className = "a num";
-      a.textContent = vnd(e.amount);
-      const as = document.createElement("small"); as.textContent = conv(Number(e.amount) || 0);
+      a.textContent = entryMain(e);
+      const as = document.createElement("small"); as.textContent = entrySub(e);
       a.appendChild(as);
       b.append(ico, t, a);
       b.addEventListener("click", () => startEdit(e));
@@ -348,6 +383,7 @@ function resetForm() {
   editingId = null;
   $("amount").value = ""; $("desc").value = ""; $("date").value = today();
   form.split = "half"; form.cat = "food";
+  try { const c = localStorage.getItem("cur"); if (c === "vnd" || c === "home") form.cur = c; } catch (e) {}
   try { const me = localStorage.getItem("me"); if (me === "a" || me === "b") form.paidBy = me; } catch (e) {}
   $("formTitle").textContent = "Add expense"; $("submit").textContent = "Add expense";
   $("cancelEdit").hidden = true; $("delBtn").hidden = true; delArmed = false; $("delBtn").textContent = "Delete";
@@ -357,7 +393,8 @@ function resetForm() {
 function startEdit(e) {
   if (e.kind === "payment") { editingId = e.id; openPay(e); return; }
   editingId = e.id;
-  $("amount").value = Number(e.amount).toLocaleString("vi-VN");
+  form.cur = e.cur === "home" ? "home" : "vnd";
+  $("amount").value = inputVal(form.cur, form.cur === "home" ? Number(e.orig) : Number(e.amount));
   $("desc").value = e.desc || "";
   $("date").value = e.date || today();
   form.paidBy = e.paidBy; form.split = e.split; form.cat = e.cat || "other";
@@ -379,11 +416,14 @@ for (const b of $("paidBy").children) b.addEventListener("click", () => {
   renderForm();
 });
 for (const b of $("split").children) b.addEventListener("click", () => { form.split = b.dataset.v; renderForm(); });
-for (const b of $("quick").children) b.addEventListener("click", () => {
-  $("amount").value = (parseAmt($("amount").value) + Number(b.dataset.add)).toLocaleString("vi-VN"); renderForm();
+for (const b of $("curSeg").children) b.addEventListener("click", () => {
+  if (form.cur === b.dataset.v) return;
+  form.cur = b.dataset.v; $("amount").value = "";
+  try { if (!editingId) localStorage.setItem("cur", form.cur); } catch (e) {}
+  renderForm(); $("amount").focus();
 });
 $("amount").addEventListener("input", renderForm);
-$("amount").addEventListener("blur", () => { const n = parseAmt($("amount").value); if (n) $("amount").value = n.toLocaleString("vi-VN"); });
+$("amount").addEventListener("blur", () => { const n = parseIn(form.cur, $("amount").value); if (n) $("amount").value = inputVal(form.cur, n); });
 $("cancelEdit").addEventListener("click", resetForm);
 
 let delArmed = false;
@@ -396,11 +436,13 @@ $("delBtn").addEventListener("click", async () => {
 
 $("form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const amount = parseAmt($("amount").value);
-  if (!amount) { toast("Enter an amount"); $("amount").focus(); return; }
+  const n = parseIn(form.cur, $("amount").value);
+  if (!n) { toast("Enter an amount"); $("amount").focus(); return; }
+  if (form.cur === "home" && !rate()) { toast("Set the exchange rate in Settings first"); return; }
   if (!db) { toast("Sign in to claude.ai to save"); return; }
+  const money = form.cur === "home" ? { cur: "home", orig: n, amount: Math.round(n * rate()) } : { cur: "vnd", amount: n };
   const doc = {
-    kind: "expense", amount, desc: $("desc").value.trim(), cat: form.cat,
+    kind: "expense", ...money, desc: $("desc").value.trim(), cat: form.cat,
     paidBy: form.paidBy, split: form.split, date: $("date").value || today(),
   };
   $("submit").disabled = true;
@@ -411,7 +453,7 @@ $("form").addEventListener("submit", async (ev) => {
       toast("Saved");
     } else {
       await db.collection("expenses").add({ ...doc, createdAt: Date.now() });
-      toast("Added " + vnd(amount));
+      toast("Added " + (form.cur === "home" ? homeFmt(n) : vnd(n)));
     }
     resetForm();
   } catch (err) {
@@ -423,19 +465,40 @@ $("form").addEventListener("submit", async (ev) => {
 let payFrom = "b";
 function openPay(existing) {
   const { owed } = balance();
-  if (existing) { payFrom = existing.paidBy; $("payAmount").value = Number(existing.amount).toLocaleString("vi-VN"); }
-  else { payFrom = owed > 0 ? "b" : "a"; $("payAmount").value = Math.round(Math.abs(owed)).toLocaleString("vi-VN"); }
+  if (existing) {
+    payFrom = existing.paidBy; payCur = existing.cur === "home" ? "home" : "vnd";
+    $("payAmount").value = inputVal(payCur, payCur === "home" ? Number(existing.orig) : Number(existing.amount));
+  } else {
+    payFrom = owed > 0 ? "b" : "a"; payCur = rate() ? "home" : "vnd";
+    const abs = Math.abs(owed);
+    $("payAmount").value = inputVal(payCur, payCur === "home" ? Math.round(abs / rate() * 100) / 100 : Math.round(abs));
+  }
+  renderPayCur();
   $("payText").textContent = nm(payFrom) + " sends money to " + nm(other(payFrom)) + " (bank transfer, Wise, cash…). Logging it zeroes out the balance.";
   $("paySave").textContent = existing ? "Save payment" : "Save payment";
   $("payCard").hidden = false;
   $("payCard").scrollIntoView({ behavior: "smooth", block: "start" });
 }
+function renderPayCur() {
+  for (const b of $("payCurSeg").children) { b.setAttribute("aria-pressed", b.dataset.v === payCur); if (b.dataset.v === "home") b.textContent = code(); }
+  $("paySuffix").textContent = payCur === "home" ? "$" : "₫";
+  $("payAmount").inputMode = payCur === "home" ? "decimal" : "numeric";
+}
+for (const b of $("payCurSeg").children) b.addEventListener("click", () => {
+  if (payCur === b.dataset.v) return;
+  const n = parseIn(payCur, $("payAmount").value);
+  const r = rate();
+  payCur = b.dataset.v;
+  if (n && r) $("payAmount").value = inputVal(payCur, payCur === "home" ? Math.round(n / r * 100) / 100 : Math.round(n * r));
+  renderPayCur();
+});
 $("settleBtn").addEventListener("click", () => { editingId = null; openPay(null); });
 $("payCancel").addEventListener("click", () => { $("payCard").hidden = true; editingId = null; });
 $("paySave").addEventListener("click", async () => {
-  const amount = parseAmt($("payAmount").value);
-  if (!amount || !db) return;
-  const doc = { kind: "payment", amount, paidBy: payFrom, desc: "Payment", date: today(), cat: "other", split: "other" };
+  const n = parseIn(payCur, $("payAmount").value);
+  if (!n || !db) return;
+  const money = payCur === "home" ? { cur: "home", orig: n, amount: Math.round(n * rate()) } : { cur: "vnd", amount: n };
+  const doc = { kind: "payment", ...money, paidBy: payFrom, desc: "Payment", date: today(), cat: "other", split: "other" };
   try {
     if (editingId) await db.collection("expenses").doc(editingId).set({ ...doc, createdAt: Date.now() });
     else await db.collection("expenses").add({ ...doc, createdAt: Date.now() });
