@@ -203,7 +203,7 @@ const $ = (id) => document.getElementById(id);
 const vnd = (n) => Math.round(n).toLocaleString("vi-VN") + " ₫";
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 
-let settings = { nameA: "Stirling", nameB: "Ryan", currency: "USD", rate: 26000 };
+let settings = { nameA: "Stirling", nameB: "Ryan", currency: "AUD", rate: 17000 };
 let expenses = [];
 let db = null;
 let editingId = null;
